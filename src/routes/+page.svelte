@@ -16,9 +16,9 @@
 </svelte:head>
 
 <Canvas />
-<button on:click={() => tick(world)}>Tick</button>
+<button onclick={() => tick(world)}>Tick</button>
 <button
-  on:click={() => {
+  onclick={() => {
     randomize(world);
     tick(world);
   }}>Randomize</button

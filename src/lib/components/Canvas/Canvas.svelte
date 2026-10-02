@@ -6,7 +6,7 @@
 
   const app = getContext<Application>("app");
   const world = getContext<World>("world");
-  let { grid } = world;
+  let grid = $state(world.grid);
   onMount(() => {
     function listener() {
       grid = world.grid;

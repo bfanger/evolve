@@ -1,6 +1,11 @@
 <script lang="ts">
   import { setContext } from "svelte";
   import type { Cell } from "../../services/world-fns";
+  type Props = {
+    children?: import("svelte").Snippet;
+  };
+
+  let { children }: Props = $props();
 
   const width = 50;
   const height = 40;
@@ -25,4 +30,4 @@
   console.info("🌎 Rebuilding world");
 </script>
 
-<slot />
+{@render children?.()}
