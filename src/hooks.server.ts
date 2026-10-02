@@ -1,24 +1,33 @@
-/* eslint-disable import/prefer-default-export */
 import type { Handle, HandleFetch } from "@sveltejs/kit";
 import cache from "$lib/services/cache";
 
 const headerWhitelist = ["content-type", "access-control-allow-origin"];
-export const handle: Handle = ({ event, resolve }) =>
-  resolve(event, {
+export const handle: Handle = async (input) => {
+  const response = await input.resolve(input.event, {
     filterSerializedResponseHeaders: (name) => headerWhitelist.includes(name),
   });
+  response.headers.set("X-Frame-Options", "sameorigin");
+  return response;
+};
 
 export const handleFetch: HandleFetch = async ({ request, fetch, event }) => {
   request.headers.set("origin", event.url.origin);
-  if (request.headers.has("SSR-Cache") === false) {
+  const ssrCache = request.headers.get("SSR-Cache");
+  if (!ssrCache) {
     return fetch(request);
   }
-  const ttl = parseInt(request.headers.get("SSR-Cache") as string, 10);
+  const config = JSON.parse(ssrCache) as {
+    dedupe: number;
+    revalidate?: number;
+    ttl?: number;
+  };
   request.headers.delete("SSR-Cache");
-
   return cache(
-    keyFromRequest(request),
-    (response) => (response.ok ? ttl : 0),
+    {
+      ...config,
+      key: keyFromRequest(request),
+      validate: (response) => response.ok,
+    },
     async () => reusableResponse(await fetch(request)),
   );
 };
@@ -27,7 +36,7 @@ function keyFromRequest(request: Request) {
   if (request.method !== "GET") {
     throw new Error(`SSR-Cache not supported for ${request.method} requests`);
   }
-  return `SSR-Cache_${request.url}\n${request.headers.get("origin")}}`;
+  return `SSR-Cache_${request.url}\t${request.headers.get("origin")}`;
 }
 
 /**
@@ -35,11 +44,13 @@ function keyFromRequest(request: Request) {
  */
 function reusableResponse(res: Response): Response {
   const textPromise = res.text();
+  const jsonPromise = textPromise.then((text) => JSON.parse(text) as unknown);
   return {
     ok: res.ok,
     headers: res.headers,
     status: res.status,
     statusText: res.statusText,
     text: () => textPromise,
+    json: () => jsonPromise,
   } as Response;
 }

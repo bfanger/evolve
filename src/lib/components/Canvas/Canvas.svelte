@@ -16,11 +16,11 @@
   });
 
   function appendCanvas(el: HTMLDivElement) {
-    el.appendChild(app.view as HTMLCanvasElement);
+    el.appendChild(app.canvas);
   }
 </script>
 
-<div use:appendCanvas />
+<div use:appendCanvas></div>
 {#each grid as column, x}
   {#each column as cell, y}
     <Cell {x} {y} type={cell.type} />

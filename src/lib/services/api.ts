@@ -1,70 +1,78 @@
 /**
- * Typed api wrapper with injectable fetch for SSR
+ * Typed api with injectable fetch for SSR
  *
- * The responses of the api methods contain the data directly.
- * The corresponding Response object is available via the helper methods via lookup.
- * This allows access to the headers and http status code by passing the data to those helpers
+ * Instead of returning a response object the methods resolve the data directly.
+ * Access to the corresponding Response object is still available via helper methods.
+ * This allows access to the headers and http status code by passing the data or error to those helpers
  */
-import { error, type NumericRange } from "@sveltejs/kit";
-import buildUrl, { type Params } from "./buildUrl";
-import type {
-  ApiGetResponse,
-  ApiPostRequest,
-  ApiPostResponse,
-} from "./api-types";
+import { error } from "@sveltejs/kit";
+import buildUrl, { type PathParams, type SearchParams } from "./buildUrl";
+import type { paths } from "./api-types.gen";
 
-const endpoint = "https://jsonplaceholder.typicode.com/";
+/* @svelte/adapter-node start */
+// import { env } from "$env/dynamic/public";
+//
+// const PUBLIC_API_ENDPOINT = env.PUBLIC_API_ENDPOINT;
+/* @svelte/adapter-node end */
 
-type Config = RequestInit & {
-  params?: Params;
-  fetch?: typeof fetch;
-  ssrCache?: number;
-};
+/* @svelte/adapter-static start */
+import { PUBLIC_API_ENDPOINT } from "$env/static/public";
+/* @svelte/adapter-static end */
+
+const slowResponseThreshold = 1000;
 const responses = new WeakMap<any, Response>();
 
-async function wrapped(
-  method: RequestInit["method"],
+async function wrapped<T>(
   path: string,
-  config: Config,
-): Promise<any> {
-  // eslint-disable-next-line prefer-const
-  let { ssrCache, fetch, params, ...init } = config;
-  params = params || {};
+  config: Config<{ params?: unknown }, unknown>,
+  body?: unknown,
+): Promise<T> {
+  let { ssrCache, fetch, params, searchParams, ...init } = config;
   if (!fetch) {
     if (typeof window === "undefined") {
       throw new Error("Missing config.fetch");
     }
+    // eslint-disable-next-line @typescript-eslint/unbound-method
     fetch = window.fetch;
   }
+  init.headers = new Headers(init.headers);
   if (ssrCache && typeof window === "undefined") {
-    init.headers = new Headers(init.headers);
-    init.headers.append("SSR-Cache", `${ssrCache}`);
+    init.headers.append("SSR-Cache", JSON.stringify(ssrCache));
   }
-  init.method = method;
-  const url = endpoint + buildUrl(path, params);
+  const endpoint = PUBLIC_API_ENDPOINT;
+  if (typeof endpoint !== "string" || endpoint === "") {
+    throw new Error("Missing environment variable PUBLIC_API_ENDPOINT");
+  }
+  const url =
+    endpoint +
+    buildUrl(path, params as PathParams<string>, searchParams as SearchParams);
+
+  if (body instanceof FormData) {
+    init.body = body;
+  } else if (body !== undefined) {
+    init.headers.append("Content-Type", "application/json; charset=utf-8");
+    init.body = JSON.stringify(body);
+  }
   const start = Date.now();
   let response: Response;
   try {
     response = await fetch(url, init);
-  } catch (err: any) {
-    if (err.message) {
-      throw new Error(`${method} ${url} failed: ${err.message}`);
-    }
-    throw err;
+  } catch (err) {
+    throw new Error(`${config.method} ${url} failed`, { cause: err });
   }
-  const duration = (Date.now() - start) / 1000;
-  if (duration > 1) {
+  const duration = Date.now() - start;
+  if (duration > slowResponseThreshold) {
     console.info(
-      `${method} ${url.substring(endpoint.length)} took ${duration.toFixed(
-        3,
-      )}s`,
+      `${config.method} ${url.substring(endpoint.length)} took ${(
+        duration / 1000
+      ).toFixed(3)}s`,
     );
   }
   if (!response.ok) {
     try {
       error(
-        response.status as NumericRange<400, 599>,
-        `${method} ${url} failed: ${response.status} ${response.statusText}`,
+        response.status,
+        `${config.method} ${url} failed: ${response.status} ${response.statusText}`,
       );
     } catch (err) {
       responses.set(err, response);
@@ -75,46 +83,55 @@ async function wrapped(
   // Note: If the api is allowed to return empty or non-json content, this check should be tweaked or removed.
   if (!response.headers.get("Content-Type")?.startsWith("application/json")) {
     const err = new Error(
-      `${method} ${url} failed: Missing 'Content-Type: application/json' header`,
+      `${config.method} ${url} failed: Missing 'Content-Type: application/json' header`,
     );
     responses.set(err, response);
     throw err;
   }
   const data = await response.json();
-  if (config.signal && config.signal.aborted) {
+  if (config.signal?.aborted) {
     throw new Error("Aborted");
   }
   if (typeof data === "object" && data !== null) {
     responses.set(data, response);
   }
-  return data;
+  return data as T;
 }
 
-const api = {
-  get<T extends keyof ApiGetResponse>(
+export const api = {
+  get: <T extends keyof Responses<"get">>(
     path: T,
-    config?: Config,
-  ): Promise<ApiGetResponse[T]> {
-    return wrapped("GET", path, config || {});
-  },
-  async post<T extends keyof ApiPostRequest & keyof ApiPostResponse>(
+    config: Config<ParamsProperty<T>, RequestSearchParams<"get">[T]>,
+  ) => wrapped<Responses<"get">[T]>(path, { ...config, method: "GET" }),
+
+  post: <T extends keyof Requests<"post">>(
     path: T,
-    data: ApiPostRequest[T],
-    config?: Config,
-  ): Promise<ApiPostResponse[T]> {
-    return wrapped("POST", path, {
-      ...config,
-      headers: {
-        ...config?.headers,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(data),
-    });
-  },
+    data: Requests<"post">[T],
+    config: Config<ParamsProperty<T>, RequestSearchParams<"post">[T]>,
+  ) => wrapped<Responses<"post">[T]>(path, { ...config, method: "POST" }, data),
+
+  put: <T extends keyof Requests<"put">>(
+    path: T,
+    data: Requests<"put">[T],
+    config: Config<ParamsProperty<T>, RequestSearchParams<"put">[T]>,
+  ) => wrapped<Responses<"put">[T]>(path, { ...config, method: "PUT" }, data),
+
+  patch: <T extends keyof Requests<"patch">>(
+    path: T,
+    data: Requests<"patch">[T],
+    config: Config<ParamsProperty<T>, RequestSearchParams<"patch">[T]>,
+  ) =>
+    wrapped<Responses<"patch">[T]>(path, { ...config, method: "PATCH" }, data),
+
+  delete: <T extends keyof Responses<"delete">>(
+    path: T,
+    config: Config<ParamsProperty<T>, RequestSearchParams<"delete">[T]>,
+  ) => wrapped<Responses<"delete">[T]>(path, { ...config, method: "DELETE" }),
 };
+
 export default api;
 
-function getResponse(dataOrError: unknown): Response | undefined {
+export function getResponse(dataOrError: unknown): Response | undefined {
   return responses.get(dataOrError);
 }
 
@@ -147,3 +164,69 @@ export function getHeader(
   }
   return undefined;
 }
+
+type ParamsProperty<T> = T extends `${string}{${string}}${string}`
+  ? { params: PathParams<T> }
+  : { params?: never };
+
+type Config<TParams, TSearchParams> = RequestInit &
+  TParams & {
+    fetch?: typeof fetch;
+    ssrCache?: { dedupe: number; revalidate?: number; ttl?: number };
+    searchParams?: TSearchParams;
+  };
+
+type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
+
+/**
+ * Union of strings with routes for a specific HTTP config.method.
+ */
+type Routes<TMethod extends HttpMethod> = {
+  [KPath in keyof paths]: paths[KPath] extends Record<TMethod, unknown>
+    ? KPath
+    : never;
+}[keyof paths];
+
+/**
+ * Extract the json response(s) from a operation based on a union of status codes.
+ */
+type JsonContent<TStatus extends number | "default", TOperation> = {
+  [KStatus in TStatus]: TOperation extends {
+    responses: Record<KStatus, { content: { "application/json": unknown } }>;
+  }
+    ? TOperation["responses"][KStatus]["content"]["application/json"]
+    : never;
+}[TStatus];
+
+/**
+ * Create a map-type of requestBodies for each route.
+ */
+type Requests<TMethod extends HttpMethod> = {
+  [P in Routes<TMethod>]: paths[P][TMethod] extends {
+    requestBody: { content: { "application/json": unknown } };
+  }
+    ? paths[P][TMethod]["requestBody"]["content"]["application/json"]
+    : paths[P][TMethod] extends {
+          requestBody?: { content: { "multipart/form-data": string } };
+        }
+      ? FormData
+      : undefined;
+};
+
+/**
+ * Create a map-type of responses for each route.
+ */
+type Responses<TMethod extends HttpMethod> = {
+  [K in Routes<TMethod>]: JsonContent<200 | 201, paths[K][TMethod]>;
+};
+
+/**
+ * Create a map-type of searchParams for each route.
+ */
+type RequestSearchParams<TMethod extends HttpMethod> = {
+  [K in Routes<TMethod>]?: paths[K][TMethod] extends {
+    parameters: { query?: unknown };
+  }
+    ? paths[K][TMethod]["parameters"]["query"]
+    : never;
+};

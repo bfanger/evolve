@@ -1,4 +1,5 @@
 /.svelte-kit
+/.svelte-check
 /build
 /package
 /node_modules
